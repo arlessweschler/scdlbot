@@ -1,86 +1,90 @@
-# -*- coding: utf-8 -*-
+"""scdlbot: run the bot, `scdlbot fetch URL` to download one link like the bot does, without Telegram, or
+`scdlbot profile` to compare (and with --apply, set) the bot's Telegram profile with telegram_settings/."""
 
+import argparse
+import asyncio
+import json
 import logging
 import os
-from logging.handlers import SysLogHandler
+from contextlib import aclosing
+from dataclasses import asdict
+from pathlib import Path
 
-from prometheus_client import start_http_server
-from telegram_handler import TelegramHandler
+import httpx
 
-from scdlbot.scdlbot import ScdlBot
-
-logging_handlers = []
-
-console_formatter = logging.Formatter('[%(name)s] %(levelname)s: %(message)s')
-console_handler = logging.StreamHandler()
-console_handler.setFormatter(console_formatter)
-console_handler.setLevel(logging.DEBUG)
-logging_handlers.append(console_handler)
-
-tg_bot_token = os.environ['TG_BOT_TOKEN']
-alert_chat_ids = list(map(int, os.getenv('ALERT_CHAT_IDS', '0').split(',')))
-telegram_handler = TelegramHandler(token=tg_bot_token, chat_id=str(alert_chat_ids[0]))
-telegram_handler.setLevel(logging.WARNING)
-logging_handlers.append(telegram_handler)
-
-syslog_debug = bool(int(os.getenv('SYSLOG_DEBUG', '0')))
-syslog_logging_level = logging.DEBUG if syslog_debug else logging.INFO
-syslog_hostname = os.getenv("HOSTNAME", "test-host")
-syslog_formatter = logging.Formatter('%(asctime)s ' + syslog_hostname + ' %(name)s: %(message)s',
-                                     datefmt='%b %d %H:%M:%S')
-
-syslog_address = os.getenv('SYSLOG_ADDRESS', '')
-if syslog_address:
-    syslog_host, syslog_udp_port = syslog_address.split(":")
-    syslog_handler = SysLogHandler(address=(syslog_host, int(syslog_udp_port)))
-    syslog_handler.setFormatter(syslog_formatter)
-    syslog_handler.setLevel(syslog_logging_level)
-    logging_handlers.append(syslog_handler)
-
-logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-                    datefmt='%Y-%m-%d %H:%M:%S',
-                    level=logging.DEBUG,
-                    handlers=logging_handlers)
+from scdlbot import routes
+from scdlbot.config import Config
+from scdlbot.links import AUDIO, PHOTO, VIDEO, classify, site_by_name
+from scdlbot.media import ensure_h264, ensure_jpeg, split
+from scdlbot.ytdlp import DownloadError, download, to_item, video_height
 
 
-def main():
-    # expose prometheus/openmetrics metrics:
-    metrics_host = os.getenv('METRICS_HOST', '127.0.0.1')
-    metrics_port = int(os.getenv('METRICS_PORT', '8000'))
-    start_http_server(metrics_port, addr=metrics_host)
-
-    store_chat_id = int(os.getenv('STORE_CHAT_ID', '0'))
-    no_flood_chat_ids = list(map(int, os.getenv('NO_FLOOD_CHAT_IDS', '0').split(',')))
-    dl_timeout = int(os.getenv('DL_TIMEOUT', '300'))
-    dl_dir = os.path.expanduser(os.getenv('DL_DIR', '/tmp/scdlbot'))
-    chat_storage_file = os.path.expanduser(os.getenv('CHAT_STORAGE', '/tmp/scdlbotdata'))
-    serve_audio = bool(int(os.getenv('SERVE_AUDIO', '0')))
-    app_url = os.getenv('APP_URL', '')
-    tg_bot_api = os.getenv('TG_BOT_API', 'https://api.telegram.org')
-    max_tg_file_size = int(os.getenv('MAX_TG_FILE_SIZE', '45_000_000'))
-    max_convert_file_size = int(os.getenv('MAX_CONVERT_FILE_SIZE', '80_000_000'))
-    proxies = os.getenv('PROXIES', None)
-    if proxies:
-        proxies = proxies.split(',')
-    source_ips = os.getenv('SOURCE_IPS', None)
-    if source_ips:
-        source_ips = source_ips.split(',')
-    cookies_file = os.getenv('COOKIES_FILE', '')
-
-    scdlbot = ScdlBot(tg_bot_token, tg_bot_api, proxies,
-                      store_chat_id, no_flood_chat_ids, alert_chat_ids,
-                      dl_dir, dl_timeout, max_tg_file_size, max_convert_file_size,
-                      chat_storage_file, app_url,
-                      serve_audio, cookies_file, source_ips)
-
-    use_webhook = bool(int(os.getenv('USE_WEBHOOK', '0')))
-    webhook_host = os.getenv('HOST', '127.0.0.1')
-    webhook_port = int(os.getenv('PORT', '5000'))
-    cert_file = os.getenv('CERT_FILE', '')
-    cert_key_file = os.getenv('CERT_KEY_FILE', '')
-    url_path = os.getenv('URL_PATH', tg_bot_token.replace(":", ""))
-    scdlbot.start(use_webhook, webhook_host, webhook_port, cert_file, cert_key_file, url_path)
+async def fetch(url: str, kind: str | None, cfg: Config, mp3: bool = False, route_name: str | None = None) -> None:
+    link = classify(url, cfg, unknown_sites=True)
+    url = link.url if link else url  # the original site's link for the preview-fixing sites (links.ALIASES), like the bot
+    kind = kind or (link.kind if link else AUDIO)
+    site = link.site if link else ""
+    try:
+        pool = routes.RoutePool(*routes.load(cfg))
+    except routes.RoutesError as exc:
+        raise SystemExit(f"Routes: {exc}") from None
+    if route_name and route_name not in pool.routes:
+        raise SystemExit(f"No route {route_name!r}; routes: {', '.join(pool.routes)}")
+    route = pool.for_site(site, pool.routes[route_name]) if route_name else pool.pick(site)
+    print(f"Route: {route.describe()}")
+    out = Path("downloads").absolute()
+    out.mkdir(exist_ok=True)
+    cfg.cache_dir.mkdir(parents=True, exist_ok=True)
+    if route.cookies:
+        async with httpx.AsyncClient() as client:
+            await route.cookies.refresh(client)
+    photos = bool((known := site_by_name(site)) and known.photos)
+    try:
+        height = video_height(link.kind if link else AUDIO)
+        async with aclosing(download(url, kind, out, cfg, route.ytdlp_args(out), photos, mp3, height=height)) as infos:
+            async for info in infos:
+                item = to_item(info, kind, site)
+                if item.kind == VIDEO:
+                    item = await ensure_h264(item, cfg)
+                elif item.kind == PHOTO:
+                    item = await ensure_jpeg(item, cfg)
+                for part in await split(item, cfg):
+                    print(json.dumps(asdict(part) | {"path": str(part.path), "size": part.size}, ensure_ascii=False))
+    except DownloadError as exc:
+        print(f"Download error: {exc}")
 
 
-if __name__ == '__main__':
+def main() -> None:
+    parser = argparse.ArgumentParser(prog="scdlbot", description=__doc__)
+    commands = parser.add_subparsers(dest="command")
+    commands.add_parser("run", help="run the bot (default)")
+    fetch_parser = commands.add_parser("fetch", help="download one URL into ./downloads like the bot does")
+    fetch_parser.add_argument("url")
+    fetch_parser.add_argument("--kind", choices=[AUDIO, VIDEO], help="override audio/video detection")
+    fetch_parser.add_argument("--mp3", action="store_true", help="convert audio to mp3, like the Always MP3 setting")
+    fetch_parser.add_argument("--route", help="download through this route (see ROUTES_FILE); default: the site's first route")
+    profile_parser = commands.add_parser("profile", help="compare the bot's Telegram profile with telegram_settings/; --apply sets what differs")
+    profile_parser.add_argument("--dir", type=Path, default=Path(os.getenv("TELEGRAM_SETTINGS") or "telegram_settings"), help="default: TELEGRAM_SETTINGS or ./telegram_settings")
+    profile_parser.add_argument("--apply", action="store_true", help="set the name, about, description and commands that differ")
+    profile_parser.add_argument("--userpic", type=Path, help="with --apply, also upload this JPEG (in --dir) as the bot's userpic")
+    args = parser.parse_args()
+
+    cfg = Config.from_env()
+    logging.basicConfig(format="%(asctime)s %(levelname)s %(name)s: %(message)s", level=cfg.loglevel)
+    for noisy in ("httpx", "httpcore", "apscheduler", "aiosqlite"):
+        logging.getLogger(noisy).setLevel(max(logging.WARNING, logging.getLogger().level))
+
+    if args.command == "fetch":
+        asyncio.run(fetch(args.url, args.kind, cfg, args.mp3, args.route))
+    elif args.command == "profile":
+        from scdlbot.profile import profile
+
+        asyncio.run(profile(cfg, args.dir, args.apply, args.userpic))
+    else:
+        from scdlbot.app import run
+
+        run(cfg)
+
+
+if __name__ == "__main__":
     main()

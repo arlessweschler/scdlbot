@@ -1,8 +1,8 @@
 Credits
 =======
 
-Development Lead
-----------------
+Creator
+-------
 
 * George Pchelkin @gpchelkin <george@pchelk.in>
 
@@ -10,4 +10,5 @@ Contributors
 ------------
 
 * Leonid Runyshkin @leovp
-* Vadim Larionov @vadimlarionov <larionov.vadim@mail.ru>
+* Vadim Larionov @vadimlarionov
+* Marcel Alexandru Nitan @nitanmarcel

@@ -1,102 +1,74 @@
-[build-system]
-requires = ["poetry-core>=1.0.0"]
-build-backend = "poetry.core.masonry.api"
-
-[tool.nitpick]
-style = "https://raw.githubusercontent.com/wemake-services/wemake-python-styleguide/master/styles/nitpick-style-wemake.toml"
-
-
-[tool.poetry]
+[project]
 name = "scdlbot"
-description = "Telegram Bot for downloading MP3 rips of tracks/sets from SoundCloud, Bandcamp, YouTube with tags and artwork"
-version = "0.13.7"
+version = "1.0.0"
+description = "Telegram bot for downloading audio (and some videos) from SoundCloud, Bandcamp, YouTube and many more sites"
 license = "MIT"
-
-authors = ["George Pchelkin <george@pchelk.in>"]
-
-readme = "README.rst"
-
-repository = "https://github.com/gpchelkin/scdlbot"
-homepage = "https://github.com/gpchelkin/scdlbot"
-documentation = "https://scdlbot.readthedocs.io"
-
-keywords = ["scdlbot", "telegram", "bot", "soundcloud", "bandcamp", "youtube", "mixcloud", "yandex", "audio", "music", "download"]
-
+readme = "README.md"
+authors = [{ name = "George Pchelkin", email = "george@pchelk.in" }]
+requires-python = ">=3.14,<3.16"
+keywords = ["scdlbot", "telegram", "bot", "soundcloud", "bandcamp", "youtube", "yt-dlp", "audio", "music", "download"]
 classifiers = [
-    "Development Status :: 4 - Beta",
-    "Intended Audience :: End Users/Desktop",
-    "Topic :: Multimedia :: Sound/Audio",
-    "Topic :: Internet",
-    "Operating System :: OS Independent",
-    "Natural Language :: English",
+  "Development Status :: 5 - Production/Stable",
+  "Intended Audience :: System Administrators",
+  "Topic :: Multimedia :: Sound/Audio",
+  "Topic :: Internet",
+  "Operating System :: POSIX",
+  "Natural Language :: English",
+  "Programming Language :: Python :: 3.14",
+  "Programming Language :: Python :: 3.15",
+]
+# These constraints go into the published package metadata (PyPI).
+dependencies = [
+  "python-telegram-bot[webhooks,http2,rate-limiter] (>=22.8,<23)",
+  "yt-dlp[default,curl-cffi] (>=2026.10.26)",
+  "yt-dlp-ejs (>=0.8.0)",
+  "curl-cffi (>=0.16.1,<0.17)",  # for yt-dlp impersonation (Instagram); 0.15 segfaults on Python 3.15
+  "aiosqlite (>=0.21)",
+  "prometheus-client (>=0.26.0)",
+  "sentry-sdk (>=2.74.0)",
 ]
 
-include = ["AUTHORS.rst", "CONTRIBUTING.md", "CHANGELOG.rst", "LICENSE", "README.rst", "tests/*", "docs/*.rst", "docs/conf.py", "docs/Makefile", "docs/*.jpg", "docs/*.png", "docs/*.gif", "scdlbot/texts/*"]
+[project.urls]
+homepage = "https://github.com/gpchelkin/scdlbot"
+repository = "https://github.com/gpchelkin/scdlbot"
+issues = "https://github.com/gpchelkin/scdlbot/issues"
+changelog = "https://github.com/gpchelkin/scdlbot/releases"
 
-[tool.poetry.scripts]
+[project.scripts]
 scdlbot = "scdlbot.__main__:main"
 
+[tool.poetry]
+packages = [{ include = "scdlbot" }]
+
 [tool.poetry.dependencies]
-python = "^3.6"
-#python-telegram-bot = "13.7"
-python-telegram-bot = "12.8"
-python-telegram-handler = "2.2.1"
-boltons = "21.0.0"
-plumbum = "1.7.0"
-ffmpeg-python = "0.2.0"
-mutagen = "1.45.1"
-patool = "1.12"
-requests = "^2.26.0"
-prometheus_client = "^0.12"
-celery = "^5.1.0"
-#pyshorteners = "0.6.1"
-#transliterate = "1.10.2"
+# The lock file (development, CI, Docker) takes yt-dlp's nightly builds: pre-releases on PyPI, built from its master
+# every day, since sites break often and fixes land there first. The published package requires a release (above);
+# deploy/upgrade.sh installs yt-dlp from its master branch on a server.
+yt-dlp = { version = ">=2026.10.26", allow-prereleases = true, extras = ["default", "curl-cffi"] }
 
-### For publishing to PyPI:
-youtube_dl = "2021.6.6"
-#youtube-dlc = "2020.11.11.post3"
-#scdl = "1.6.12"
-#bandcamp-downloader = "0.0.8.post12"
+[tool.poetry.group.dev.dependencies]
+ruff = ">=0.17.3"
+pytest = ">=9.2.0"
+pytest-asyncio = ">=1.4.1.post1"
 
-### For making it really work:
-# https://github.com/ytdl-org/youtube-dl/pull/26684
-#youtube_dl = { git = "https://github.com/l1ving/youtube-dl.git" }
-#youtube_dl = { git = "https://github.com/gilou/youtube-dl.git", branch = "bandcamp_update" }
-#youtube_dl = { git = "https://github.com/gpchelkin/youtube-dl.git", branch = "bandcamp_update" }
-#youtube-dlc = { git = "https://github.com/blackjack4494/yt-dlc.git", branch = "master" }
-#yt-dlp = "2021.10.10"
-scdl = { git = "https://github.com/flyingrub/scdl.git" }
-#scdl = { git = "https://github.com/gpchelkin/scdl.git", branch = "add_permalink_url_to_filename" }
-#scdl = { git = "https://github.com/def-hash/scdl.git", branch = "user-agent-fix" }
-#scdl = { git = "https://github.com/7x11x13/scdl.git", branch = "master" }
-#bandcamp-downloader = { git = "https://github.com/iheanyi/bandcamp-dl.git" }
-bandcamp-downloader = { git = "https://github.com/gpchelkin/bandcamp-dl.git", branch = "demjson3" }
+[tool.ruff]
+line-length = 180
+target-version = "py314"
 
-#fake-useragent = { git = "https://github.com/Jordan9675/fake-useragent.git", branch = "master" }
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "UP", "SIM", "ASYNC", "RUF"]
+ignore = [
+  "RUF001", "RUF003",  # emoji and ambiguous unicode in user-facing texts are intended
+  "ASYNC109",  # timeouts passed down to subprocess and Telegram calls on purpose
+  "ASYNC240",  # tiny Path calls are fine
+  "SIM108",  # if/else is often clearer than a long ternary
+]
+per-file-ignores = { "tests/*" = ["RUF059"] }  # tests unpack the whole fixture tuple
 
-[tool.poetry.dev-dependencies]
-mypy = "^0.910"
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
 
-wemake-python-styleguide = "^0.15"
-flake8-pytest = "^1.3"
-flake8-pytest-style = "^1.5"
-nitpick = "^0.29.0"
-
-safety = "^1.10.0"
-
-pytest = "^6.2.0"
-pytest-cov = "^3.0.0"
-pytest-randomly = "^3.10"
-
-sphinx = "^4.3.0"
-sphinx-autodoc-typehints = "^1.12.0"
-doc8 = "^0.10"
-m2r2 = "^0.3.1"
-tomlkit = "^0.7"
-
-tox = "^3.24"
-
-
-[tool.dephell.main]
-from = {format = "poetry", path = "pyproject.toml"}
-to = {format = "setuppy", path = "setup.py"}
+[build-system]
+requires = ["poetry-core>=2.0"]
+build-backend = "poetry.core.masonry.api"
